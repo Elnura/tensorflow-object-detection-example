@@ -41,6 +41,8 @@ from utils import label_map_util
 from werkzeug.datastructures import CombinedMultiDict
 from wtforms import Form
 from wtforms import ValidationError
+import cam as ipc
+import os
 
 
 app = Flask(__name__)
@@ -142,6 +144,43 @@ def encode_image(image):
       base64.b64encode(image_buffer.getvalue()))
   return imgstr
 
+def detect_objects2():
+  ip_camera_url = 'http://172.21.2.254/fastjpeg'
+
+  ipcamera = ipc.ipCamera(url=ip_camera_url, user='admin', password='admin')
+  frame = ipcamera.get_frame()
+
+  if frame == None : # Kamera Bağlantısında Sorun Oluştu...
+    return
+
+  count = 0
+
+  while frame is not None:
+    # Get a frame in range of 4 seconds
+    if count % 60 == 0:
+      frame = ipcamera.get_frame()
+      if frame is not None:
+        boxes, scores, classes, num_detections = client.detect(frame)
+        frame.thumbnail((480, 480), Image.ANTIALIAS)
+
+        new_images = {}
+        for i in range(num_detections):
+          if scores[i] < 0.7: continue
+          cls = classes[i]
+          if cls not in new_images.keys():
+            new_images[cls] = frame.copy()
+          draw_bounding_box_on_image(new_images[cls], boxes[i],
+                                     thickness=int(scores[i] * 10) - 4)
+
+        result = {}
+        result['original'] = encode_image(frame.copy())
+
+        for cls, new_image in new_images.iteritems():
+          category = client.category_index[cls]['name']
+          result[category] = encode_image(new_image)
+
+        return result
+    #count += 1
 
 def detect_objects(image_path):
   image = Image.open(image_path).convert('RGB')
@@ -159,6 +198,8 @@ def detect_objects(image_path):
 
   result = {}
   result['original'] = encode_image(image.copy())
+  result['human_count'] = 0
+  result['process_time'] = 0
 
   for cls, new_image in new_images.iteritems():
     category = client.category_index[cls]['name']
@@ -176,17 +217,11 @@ def upload():
 @app.route('/post', methods=['GET', 'POST'])
 def post():
   form = PhotoForm(CombinedMultiDict((request.files, request.form)))
-  if request.method == 'POST' and form.validate():
-    with tempfile.NamedTemporaryFile() as temp:
-      form.input_photo.data.save(temp)
-      temp.flush()
-      result = detect_objects(temp.name)
+  result = detect_objects2()  # file.filename
 
-    photo_form = PhotoForm(request.form)
-    return render_template('upload.html',
-                           photo_form=photo_form, result=result)
-  else:
-    return redirect(url_for('upload'))
+  photo_form = PhotoForm(request.form)
+  return render_template('upload.html',
+                         photo_form=photo_form, result=result)
 
 
 client = ObjectDetector()
